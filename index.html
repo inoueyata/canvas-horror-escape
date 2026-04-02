@@ -2,69 +2,662 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Canvas Horror Escape</title>
+<title>Canvas Horror Escape - Hard Mode</title>
 <style>
-body { background-color: #111; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: 'Courier New', Courier, monospace; }
-canvas { border: 2px solid #444; cursor: crosshair; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-#ui { width: 600px; height: 100px; margin-top: 10px; background: #222; padding: 15px; border: 1px solid #444; font-size: 14px; line-height: 1.6; }
+body { background-color: #0a0a0a; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: 'Courier New', Courier, monospace; }
+canvas { border: 2px solid #444; cursor: crosshair; box-shadow: 0 0 30px rgba(100,0,0,0.4); }
+#ui { width: 600px; min-height: 80px; margin-top: 10px; background: #1a1a1a; padding: 15px; border: 1px solid #333; font-size: 13px; line-height: 1.6; }
+#inventory { width: 600px; margin-top: 5px; background: #151515; padding: 10px; border: 1px solid #333; font-size: 12px; }
+h2 { color: #cc3333; text-shadow: 0 0 10px rgba(200,0,0,0.5); }
 </style>
 </head>
 <body>
-<h2 id="title">遺された地下室</h2>
+<h2 id="title">遺された地下室 - 深層</h2>
 <canvas id="gameCanvas" width="600" height="400"></canvas>
-<div id="ui">画面内の怪しい場所をクリックして、この部屋から脱出してください。</div>
+<div id="ui">暗い地下室に閉じ込められた。出口を見つけなければ…。<br>怪しい場所をクリックして調べよう。</div>
+<div id="inventory">所持品: なし</div>
 <script>
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const ui = document.getElementById('ui');
-let state = { hasKey: false, paperRead: false, isSafeOpen: false, safeCode: "413", currentInput: "", gameOver: false };
-const objects = {
-  door: { x: 450, y: 150, w: 80, h: 180, label: "ドア" },
-  safe: { x: 100, y: 250, w: 60, h: 60, label: "金庫" },
-  desk: { x: 250, y: 280, w: 120, h: 60, label: "机" },
-  painting: { x: 270, y: 80, w: 80, h: 100, label: "絵画" }
+const invUI = document.getElementById('inventory');
+
+let flickerTimer = 0;
+let lightOn = true;
+let shakeX = 0, shakeY = 0;
+let ghostAlpha = 0;
+let ghostShow = false;
+let ambientTick = 0;
+
+const state = {
+  room: 0, // 0=地下室, 1=通路, 2=儀式の間, 3=最終部屋
+  inventory: [],
+  flags: {},
+  gameOver: false,
+  deathCount: 0,
+  dead: false,
+  deadMsg: ""
 };
-function draw() {
-  ctx.fillStyle = "#1a1a1a"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#332211"; ctx.fillRect(0, 320, canvas.width, 80);
-  ctx.fillStyle = state.hasKey ? "#442211" : "#221100";
-  ctx.fillRect(objects.door.x, objects.door.y, objects.door.w, objects.door.h);
-  ctx.strokeStyle = "#000"; ctx.strokeRect(objects.door.x, objects.door.y, objects.door.w, objects.door.h);
-  ctx.fillStyle = "gold"; ctx.beginPath(); ctx.arc(470, 250, 5, 0, Math.PI*2); ctx.fill();
-  ctx.fillStyle = state.isSafeOpen ? "#555" : "#333";
-  ctx.fillRect(objects.safe.x, objects.safe.y, objects.safe.w, objects.safe.h);
-  ctx.strokeStyle = "#000"; ctx.strokeRect(objects.safe.x, objects.safe.y, objects.safe.w, objects.safe.h);
-  if(!state.isSafeOpen) { ctx.fillStyle = "white"; ctx.fillText("CODE", 115, 275); }
-  ctx.fillStyle = "#5c4033"; ctx.fillRect(objects.desk.x, objects.desk.y, objects.desk.w, objects.desk.h);
-  ctx.fillStyle = "white"; ctx.fillRect(280, 285, 20, 10);
-  ctx.fillStyle = "#000"; ctx.fillRect(objects.painting.x, objects.painting.y, objects.painting.w, objects.painting.h);
-  ctx.strokeStyle = "#666"; ctx.lineWidth = 5;
-  ctx.strokeRect(objects.painting.x, objects.painting.y, objects.painting.w, objects.painting.h);
-  ctx.fillStyle = "red"; ctx.beginPath(); ctx.arc(300, 120, 2, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(320, 120, 2, 0, Math.PI*2); ctx.fill();
-  if (state.gameOver) {
-    ctx.fillStyle = "rgba(0,0,0,0.8)"; ctx.fillRect(0,0,canvas.width, canvas.height);
-    ctx.fillStyle = "red"; ctx.font = "40px serif"; ctx.fillText("ESCAPE SUCCESS", 150, 200);
-  }
+
+function hasItem(name) { return state.inventory.includes(name); }
+function addItem(name) { if (!hasItem(name)) state.inventory.push(name); updateInv(); }
+function removeItem(name) { state.inventory = state.inventory.filter(i => i !== name); updateInv(); }
+function updateInv() {
+  invUI.textContent = "所持品: " + (state.inventory.length ? state.inventory.join(", ") : "なし");
 }
+
+function msg(text) { ui.innerHTML = text; }
+
+function die(text) {
+  state.dead = true;
+  state.deathCount++;
+  state.deadMsg = text;
+  msg(text + "<br><br><span style='color:#666'>クリックでやり直し（死亡回数: " + state.deathCount + "）</span>");
+}
+
+// 各部屋のオブジェクト定義
+const rooms = [
+  // Room 0: 地下室
+  {
+    name: "地下室",
+    draw: function() {
+      // 壁
+      ctx.fillStyle = "#1a1a1a"; ctx.fillRect(0, 0, 600, 400);
+      // 石壁テクスチャ
+      ctx.strokeStyle = "#222";
+      for (let i = 0; i < 600; i += 40) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 320); ctx.stroke(); }
+      for (let j = 0; j < 320; j += 30) { ctx.beginPath(); ctx.moveTo(0, j); ctx.lineTo(600, j); ctx.stroke(); }
+      // 床
+      ctx.fillStyle = "#2a1a0a"; ctx.fillRect(0, 320, 600, 80);
+      
+      // 棚 (左上)
+      ctx.fillStyle = "#3a2a1a"; ctx.fillRect(20, 100, 100, 15);
+      ctx.fillRect(15, 100, 5, 80); ctx.fillRect(120, 100, 5, 80);
+      // 棚の上のビン
+      ctx.fillStyle = "#335533"; ctx.fillRect(40, 85, 12, 15);
+      ctx.fillStyle = "#553333"; ctx.fillRect(70, 80, 12, 20);
+      ctx.fillStyle = "#333355"; ctx.fillRect(95, 88, 10, 12);
+      
+      // 机
+      ctx.fillStyle = "#4a3020"; ctx.fillRect(200, 270, 130, 50);
+      ctx.fillRect(205, 320, 10, 30); ctx.fillRect(315, 320, 10, 30);
+      // 机の引き出し
+      ctx.fillStyle = "#3a2515"; ctx.fillRect(230, 280, 40, 20);
+      ctx.strokeStyle = "#555"; ctx.strokeRect(230, 280, 40, 20);
+      ctx.fillStyle = "#888"; ctx.fillRect(247, 288, 6, 4);
+      // 机の上のノート
+      if (!state.flags.noteTaken) {
+        ctx.fillStyle = "#ddd"; ctx.fillRect(280, 260, 25, 18);
+        ctx.fillStyle = "#999"; ctx.font = "6px serif";
+        ctx.fillText("〒", 288, 272);
+      }
+      
+      // 壁の時計
+      ctx.fillStyle = "#222"; ctx.beginPath(); ctx.arc(450, 80, 25, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = "#555"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(450, 80, 25, 0, Math.PI*2); ctx.stroke();
+      ctx.strokeStyle = "#aaa"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(450, 80); ctx.lineTo(450, 62); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(450, 80); ctx.lineTo(462, 75); ctx.stroke();
+      // 時計の数字
+      ctx.fillStyle = "#666"; ctx.font = "8px serif";
+      ctx.fillText("12", 444, 62); ctx.fillText("3", 472, 83); ctx.fillText("6", 447, 103); ctx.fillText("9", 428, 83);
+
+      // 鏡 (右壁)
+      ctx.fillStyle = "#1a2a3a";
+      ctx.fillRect(500, 120, 60, 90);
+      ctx.strokeStyle = "#8a7a5a"; ctx.lineWidth = 3;
+      ctx.strokeRect(500, 120, 60, 90);
+      // 鏡に映る影
+      if (state.flags.mirrorLooked > 1) {
+        ctx.fillStyle = "rgba(80,0,0,0.3)";
+        ctx.beginPath(); ctx.ellipse(530, 155, 15, 25, 0, 0, Math.PI*2); ctx.fill();
+      }
+      
+      // 排水口 (床)
+      ctx.fillStyle = "#111"; ctx.beginPath(); ctx.ellipse(100, 360, 20, 10, 0, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = "#333"; ctx.beginPath(); ctx.ellipse(100, 360, 20, 10, 0, 0, Math.PI*2); ctx.stroke();
+      
+      // 鉄の扉 (右下)
+      ctx.fillStyle = "#2a2a2a"; ctx.fillRect(430, 180, 70, 150);
+      ctx.strokeStyle = "#444"; ctx.lineWidth = 2; ctx.strokeRect(430, 180, 70, 150);
+      // 扉のロック
+      ctx.fillStyle = state.flags.door0Open ? "#4a4" : "#a44";
+      ctx.beginPath(); ctx.arc(440, 260, 6, 0, Math.PI*2); ctx.fill();
+      // 扉のスリット
+      ctx.fillStyle = "#111"; ctx.fillRect(450, 200, 30, 5);
+      ctx.fillRect(450, 220, 30, 5);
+
+      // 天井のパイプ
+      ctx.strokeStyle = "#444"; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(0, 30); ctx.lineTo(350, 30); ctx.lineTo(350, 0); ctx.stroke();
+      // 水滴
+      if (ambientTick % 60 < 5) {
+        ctx.fillStyle = "#4466aa"; ctx.beginPath(); ctx.ellipse(200, 35 + (ambientTick % 60) * 3, 2, 3, 0, 0, Math.PI*2); ctx.fill();
+      }
+    },
+    objects: {
+      shelf: { x: 20, y: 80, w: 105, h: 100 },
+      desk: { x: 200, y: 255, w: 130, h: 70 },
+      drawer: { x: 230, y: 280, w: 40, h: 20 },
+      clock: { x: 425, y: 55, w: 50, h: 50 },
+      mirror: { x: 500, y: 120, w: 60, h: 90 },
+      drain: { x: 80, y: 350, w: 40, h: 20 },
+      door0: { x: 430, y: 180, w: 70, h: 150 }
+    },
+    onClick: function(key) {
+      switch(key) {
+        case 'shelf':
+          if (!state.flags.shelfSearched) {
+            state.flags.shelfSearched = true;
+            msg("埃をかぶった棚だ。瓶がいくつか並んでいる…<br>赤い瓶の裏に小さな「六角レンチ」を見つけた。");
+            addItem("六角レンチ");
+          } else {
+            msg("もう棚には何もない。埃っぽい匂いがする。");
+          }
+          break;
+        case 'desk':
+          if (!state.flags.noteTaken) {
+            state.flags.noteTaken = true;
+            msg("机の上にノートが置いてある。開くと走り書きが…<br>『鏡は嘘をつかない。だが3回目には真実を映す』<br>『時計が止まった時刻を忘れるな』");
+            addItem("ノート");
+          } else {
+            msg("古い木の机。もう何もない。");
+          }
+          break;
+        case 'drawer':
+          if (!state.flags.drawerOpened) {
+            if (hasItem("六角レンチ")) {
+              state.flags.drawerOpened = true;
+              msg("六角レンチで引き出しをこじ開けた！<br>中に「赤い宝石」が入っていた。");
+              addItem("赤い宝石");
+              removeItem("六角レンチ");
+            } else {
+              msg("引き出しはネジで固定されている。何か工具がいる…");
+            }
+          } else {
+            msg("空の引き出し。");
+          }
+          break;
+        case 'clock':
+          msg("壁掛け時計。針は<span style='color:yellow'>12時37分</span>で止まっている。<br>裏には何もない。");
+          state.flags.clockRead = true;
+          break;
+        case 'mirror':
+          state.flags.mirrorLooked = (state.flags.mirrorLooked || 0) + 1;
+          if (state.flags.mirrorLooked === 1) {
+            msg("古い鏡だ。自分の顔が映っている…はずだが、暗くてよく見えない。");
+          } else if (state.flags.mirrorLooked === 2) {
+            msg("もう一度覗く。鏡の中の影が…少しずれている気がする。");
+            shakeScreen();
+          } else if (state.flags.mirrorLooked === 3) {
+            msg("三度目。鏡の中に<span style='color:red'>自分ではない誰か</span>が映っている！<br>鏡の縁に数字が浮かび上がる…「<span style='color:yellow'>7</span>」");
+            state.flags.mirrorNumber = true;
+            ghostShow = true; setTimeout(() => ghostShow = false, 2000);
+            shakeScreen();
+          } else {
+            msg("…もう見たくない。");
+          }
+          break;
+        case 'drain':
+          if (!state.flags.drainSearched) {
+            msg("排水口に手を突っ込む…何か触れた！<br>ぬるぬるした感触の中から「青い宝石」を取り出した。<br>…二度とやりたくない。");
+            state.flags.drainSearched = true;
+            addItem("青い宝石");
+          } else {
+            msg("もう手を入れたくない。");
+          }
+          break;
+        case 'door0':
+          if (state.flags.door0Open) {
+            msg("通路へ進む…");
+            state.room = 1;
+          } else {
+            if (hasItem("赤い宝石") && hasItem("青い宝石")) {
+              let code = prompt("扉のパネルに4桁の暗証番号を入力:");
+              if (code === "1237") {
+                state.flags.door0Open = true;
+                msg("扉のロックが解除された！<br>宝石をはめ込むと、重い音を立てて扉が開いた。");
+                removeItem("赤い宝石"); removeItem("青い宝石");
+              } else {
+                die("間違った番号を入力した瞬間、天井から毒ガスが噴出した…<br><span style='color:red'>☠ DEAD</span>");
+              }
+            } else {
+              msg("重い鉄の扉。2つの宝石をはめる窪みと、4桁の入力パネルがある。");
+            }
+          }
+          break;
+      }
+    }
+  },
+  // Room 1: 通路
+  {
+    name: "通路",
+    draw: function() {
+      // 暗い通路
+      ctx.fillStyle = "#111"; ctx.fillRect(0, 0, 600, 400);
+      // 壁
+      ctx.fillStyle = "#1a1510"; 
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(150,80); ctx.lineTo(150,320); ctx.lineTo(0,400); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(600,0); ctx.lineTo(450,80); ctx.lineTo(450,320); ctx.lineTo(600,400); ctx.fill();
+      // 床
+      ctx.fillStyle = "#2a1a0a";
+      ctx.beginPath(); ctx.moveTo(0,400); ctx.lineTo(150,320); ctx.lineTo(450,320); ctx.lineTo(600,400); ctx.fill();
+      // 天井
+      ctx.fillStyle = "#0a0a0a";
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(150,80); ctx.lineTo(450,80); ctx.lineTo(600,0); ctx.fill();
+      // 奥の扉
+      ctx.fillStyle = "#2a1515"; ctx.fillRect(220, 120, 160, 200);
+      ctx.strokeStyle = "#444"; ctx.lineWidth = 2; ctx.strokeRect(220, 120, 160, 200);
+      // 扉の模様（五芒星）
+      ctx.strokeStyle = "#661111"; ctx.lineWidth = 1;
+      ctx.beginPath();
+      const cx2=300, cy2=200, r=40;
+      for (let i = 0; i < 5; i++) {
+        const a1 = (i * 4 * Math.PI / 5) - Math.PI/2;
+        const a2 = ((i+1) * 4 * Math.PI / 5) - Math.PI/2;
+        ctx.moveTo(cx2+r*Math.cos(a1), cy2+r*Math.sin(a1));
+        ctx.lineTo(cx2+r*Math.cos(a2), cy2+r*Math.sin(a2));
+      }
+      ctx.stroke();
+      
+      // 左壁の文字
+      ctx.fillStyle = "#331111"; ctx.font = "14px serif";
+      ctx.save(); ctx.translate(80, 250); ctx.rotate(-0.3);
+      ctx.fillText("逃げられない", 0, 0);
+      ctx.restore();
+      
+      // 右壁の燭台
+      ctx.fillStyle = "#8a7a3a"; ctx.fillRect(470, 150, 8, 40);
+      ctx.fillStyle = "#ffaa00";
+      ctx.beginPath(); ctx.ellipse(474, 145, 6, 10, 0, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "rgba(255,200,50,0.1)";
+      ctx.beginPath(); ctx.ellipse(474, 145, 40, 40, 0, 0, Math.PI*2); ctx.fill();
+      
+      // 床の染み
+      ctx.fillStyle = "#3a1111";
+      ctx.beginPath(); ctx.ellipse(350, 360, 30, 10, 0.2, 0, Math.PI*2); ctx.fill();
+      
+      // 左の穴
+      ctx.fillStyle = "#050505"; ctx.fillRect(160, 200, 30, 30);
+      ctx.strokeStyle = "#222"; ctx.strokeRect(160, 200, 30, 30);
+      
+      // 戻る矢印
+      ctx.fillStyle = "#555"; ctx.font = "12px serif"; ctx.fillText("← 戻る", 10, 390);
+    },
+    objects: {
+      forwardDoor: { x: 220, y: 120, w: 160, h: 200 },
+      wallText: { x: 40, y: 200, w: 100, h: 60 },
+      candle: { x: 460, y: 130, w: 30, h: 70 },
+      stain: { x: 320, y: 350, w: 60, h: 20 },
+      hole: { x: 160, y: 200, w: 30, h: 30 },
+      back: { x: 0, y: 370, w: 80, h: 30 }
+    },
+    onClick: function(key) {
+      switch(key) {
+        case 'forwardDoor':
+          if (state.flags.hallDoorOpen) {
+            state.room = 2; msg("儀式の間に足を踏み入れる…");
+          } else if (hasItem("古い鍵")) {
+            state.flags.hallDoorOpen = true;
+            msg("古い鍵が合った！扉が軋みながら開く…<br>向こうから冷たい風が吹いてくる。");
+            removeItem("古い鍵");
+          } else {
+            msg("錆びた扉。鍵穴がある。五芒星の模様が刻まれている…不吉だ。");
+          }
+          break;
+        case 'wallText':
+          msg("壁に血のような文字で書いてある…<br>「<span style='color:#aa3333'>逃げられない</span>」<br>…指で書かれたようだ。");
+          shakeScreen();
+          break;
+        case 'candle':
+          if (!state.flags.candleTaken) {
+            msg("燭台から蝋燭を取った。まだ温かい…<br>誰かが最近ここにいた？");
+            state.flags.candleTaken = true;
+            addItem("蝋燭");
+          } else {
+            msg("空の燭台。");
+          }
+          break;
+        case 'stain':
+          msg("床に黒ずんだ染みがある。<br>…何の染みかは考えたくない。");
+          break;
+        case 'hole':
+          if (!state.flags.holeSearched) {
+            if (hasItem("蝋燭")) {
+              state.flags.holeSearched = true;
+              msg("蝋燭の明かりで穴の中を照らす…<br>奥に「古い鍵」が落ちていた！");
+              addItem("古い鍵");
+            } else {
+              msg("壁の穴。暗くて中が見えない。明かりがあれば…");
+            }
+          } else {
+            msg("もう何もない暗い穴。");
+          }
+          break;
+        case 'back':
+          state.room = 0; msg("地下室に戻った。");
+          break;
+      }
+    }
+  },
+  // Room 2: 儀式の間
+  {
+    name: "儀式の間",
+    draw: function() {
+      ctx.fillStyle = "#0d0808"; ctx.fillRect(0, 0, 600, 400);
+      // 石の床（円形模様）
+      ctx.strokeStyle = "#221111"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(300, 250, 100, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(300, 250, 70, 0, Math.PI*2); ctx.stroke();
+      // 五芒星
+      ctx.strokeStyle = "#441111"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const a1 = (i * 4 * Math.PI / 5) - Math.PI/2;
+        const a2 = ((i+1) * 4 * Math.PI / 5) - Math.PI/2;
+        ctx.moveTo(300+80*Math.cos(a1), 250+80*Math.sin(a1));
+        ctx.lineTo(300+80*Math.cos(a2), 250+80*Math.sin(a2));
+      }
+      ctx.stroke();
+      
+      // 祭壇
+      ctx.fillStyle = "#2a1a1a"; ctx.fillRect(260, 140, 80, 40);
+      ctx.strokeStyle = "#444"; ctx.strokeRect(260, 140, 80, 40);
+      // 祭壇の上の頭蓋骨
+      ctx.fillStyle = "#aaa";
+      ctx.beginPath(); ctx.arc(300, 130, 15, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#222";
+      ctx.beginPath(); ctx.arc(294, 127, 3, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(306, 127, 3, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(300, 137, 4, 2, 0, 0, Math.PI*2); ctx.fill();
+      
+      // 4つの燭台
+      const candlePos = [[200,150],[400,150],[200,340],[400,340]];
+      candlePos.forEach(([cx,cy], i) => {
+        ctx.fillStyle = "#555"; ctx.fillRect(cx-3, cy, 6, 20);
+        if (state.flags['candle_lit_'+i]) {
+          ctx.fillStyle = "#ffaa00"; ctx.beginPath(); ctx.ellipse(cx, cy-5, 5, 8, 0, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle = "rgba(255,200,50,0.05)"; ctx.beginPath(); ctx.ellipse(cx, cy, 40, 40, 0, 0, Math.PI*2); ctx.fill();
+        }
+      });
+      
+      // 壁の記号
+      ctx.fillStyle = "#331111"; ctx.font = "20px serif";
+      ctx.fillText("卍", 50, 100); ctx.fillText("☠", 540, 100);
+      ctx.fillText("†", 50, 300); ctx.fillText("◆", 540, 300);
+      
+      // 右の出口
+      if (state.flags.ritualComplete) {
+        ctx.fillStyle = "#1a1a2a"; ctx.fillRect(550, 160, 50, 120);
+        ctx.fillStyle = "#336"; ctx.font = "10px serif"; ctx.fillText("出口→", 555, 225);
+      }
+      
+      // 左: 石板
+      ctx.fillStyle = "#333"; ctx.fillRect(30, 180, 60, 80);
+      ctx.strokeStyle = "#555"; ctx.strokeRect(30, 180, 60, 80);
+      ctx.fillStyle = "#888"; ctx.font = "8px serif";
+      ctx.fillText("四隅に火を", 35, 210);
+      ctx.fillText("灯し、名を", 35, 225);
+      ctx.fillText("唱えよ", 35, 240);
+      
+      // 戻る
+      ctx.fillStyle = "#555"; ctx.font = "12px serif"; ctx.fillText("← 戻る", 10, 390);
+    },
+    objects: {
+      altar: { x: 260, y: 110, w: 80, h: 70 },
+      candle0: { x: 190, y: 145, w: 20, h: 30 },
+      candle1: { x: 390, y: 145, w: 20, h: 30 },
+      candle2: { x: 190, y: 335, w: 20, h: 30 },
+      candle3: { x: 390, y: 335, w: 20, h: 30 },
+      tablet: { x: 30, y: 180, w: 60, h: 80 },
+      exit: { x: 550, y: 160, w: 50, h: 120 },
+      back: { x: 0, y: 370, w: 80, h: 30 }
+    },
+    onClick: function(key) {
+      if (key === 'back') { state.room = 1; msg("通路に戻った。"); return; }
+      if (key === 'tablet') {
+        msg("石板に文字が刻まれている：<br>「<span style='color:#aa8833'>四隅に火を灯し、名を唱えよ。</span><br><span style='color:#aa8833'>さすれば道は開かれん。</span>」");
+        return;
+      }
+      if (key === 'altar') {
+        if (state.flags.ritualComplete) {
+          msg("祭壇は静かだ。頭蓋骨の目が光を失っている。");
+        } else if (state.flags.candle_lit_0 && state.flags.candle_lit_1 && state.flags.candle_lit_2 && state.flags.candle_lit_3) {
+          let name = prompt("名を唱えよ…（入力してください）:");
+          if (name && name.length > 0) {
+            // どんな名前でも50%の確率で成功、ただし「死」を含むと確定成功
+            if (name.includes("死") || name.includes("shi") || name.includes("death") || Math.random() > 0.5) {
+              state.flags.ritualComplete = true;
+              msg("「" + name + "」と唱えた瞬間、部屋が震え始めた！<br>頭蓋骨の目が赤く光り、右の壁が崩れて<span style='color:cyan'>出口</span>が現れた！");
+              shakeScreen(); shakeScreen();
+            } else {
+              die("「" + name + "」…その名は受け入れられなかった。<br>頭蓋骨の顎が開き、闇が溢れ出した…<br><span style='color:red'>☠ DEAD</span>");
+              state.flags.candle_lit_0 = state.flags.candle_lit_1 = state.flags.candle_lit_2 = state.flags.candle_lit_3 = false;
+            }
+          }
+        } else {
+          msg("祭壇の上に古い頭蓋骨が置かれている。<br>空洞の目がこちらを見つめている…");
+        }
+        return;
+      }
+      if (key === 'exit') {
+        if (state.flags.ritualComplete) {
+          state.room = 3; msg("最後の部屋に入った。冷たい空気が肌を刺す。");
+        } else {
+          msg("壁だ。何もない。");
+        }
+        return;
+      }
+      // 燭台
+      if (key.startsWith('candle')) {
+        const idx = parseInt(key.charAt(6));
+        if (state.flags['candle_lit_'+idx]) {
+          msg("もう火がついている。");
+        } else if (hasItem("蝋燭")) {
+          state.flags['candle_lit_'+idx] = true;
+          const lit = [0,1,2,3].filter(i => state.flags['candle_lit_'+i]).length;
+          msg("燭台に火を灯した。（" + lit + "/4）");
+          if (lit === 4) {
+            msg("四隅の炎が同時に揺らめいた…<br>祭壇の頭蓋骨がかすかに振動している。<br><span style='color:yellow'>祭壇を調べてみよう。</span>");
+            shakeScreen();
+          }
+        } else {
+          msg("燭台がある。火をつけるものが必要だ。");
+        }
+        return;
+      }
+    }
+  },
+  // Room 3: 最終部屋
+  {
+    name: "最終部屋",
+    draw: function() {
+      ctx.fillStyle = "#080810"; ctx.fillRect(0, 0, 600, 400);
+      // 階段
+      for (let i = 0; i < 8; i++) {
+        ctx.fillStyle = i % 2 ? "#222" : "#1a1a1a";
+        ctx.fillRect(250 - i*5, 300 - i*30, 100 + i*10, 30);
+      }
+      // 上の光
+      ctx.fillStyle = "rgba(200,200,255,0.05)";
+      ctx.beginPath(); ctx.moveTo(250, 60); ctx.lineTo(350, 60); ctx.lineTo(400, 0); ctx.lineTo(200, 0); ctx.fill();
+      
+      // 扉（上）
+      ctx.fillStyle = "#2a2a3a"; ctx.fillRect(260, 30, 80, 60);
+      ctx.strokeStyle = state.flags.finalOpen ? "#8f8" : "#666"; ctx.lineWidth = 2;
+      ctx.strokeRect(260, 30, 80, 60);
+      if (state.flags.finalOpen) {
+        ctx.fillStyle = "rgba(200,220,255,0.3)"; ctx.fillRect(265, 35, 70, 50);
+      }
+      ctx.fillStyle = "#888"; ctx.beginPath(); ctx.arc(330, 60, 4, 0, Math.PI*2); ctx.fill();
+      
+      // 壁のメッセージ
+      ctx.fillStyle = "#333"; ctx.font = "11px serif";
+      ctx.fillText("最後の試練", 250, 370);
+      
+      // 左の彫像
+      ctx.fillStyle = "#444";
+      ctx.fillRect(80, 200, 30, 60);
+      ctx.beginPath(); ctx.arc(95, 190, 15, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#a33";
+      ctx.beginPath(); ctx.arc(90, 188, 2, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(100, 188, 2, 0, Math.PI*2); ctx.fill();
+      
+      // 右の彫像
+      ctx.fillStyle = "#444";
+      ctx.fillRect(490, 200, 30, 60);
+      ctx.beginPath(); ctx.arc(505, 190, 15, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#a33";
+      ctx.beginPath(); ctx.arc(500, 188, 2, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(510, 188, 2, 0, Math.PI*2); ctx.fill();
+
+      // 戻る
+      ctx.fillStyle = "#555"; ctx.font = "12px serif"; ctx.fillText("← 戻る", 10, 390);
+    },
+    objects: {
+      finalDoor: { x: 260, y: 30, w: 80, h: 60 },
+      leftStatue: { x: 70, y: 175, w: 50, h: 90 },
+      rightStatue: { x: 480, y: 175, w: 50, h: 90 },
+      stairs: { x: 210, y: 60, w: 180, h: 260 },
+      back: { x: 0, y: 370, w: 80, h: 30 }
+    },
+    onClick: function(key) {
+      if (key === 'back') { state.room = 2; msg("儀式の間に戻った。"); return; }
+      if (key === 'leftStatue') {
+        msg("石の彫像。赤い目がこちらを見ている。<br>台座に「<span style='color:yellow'>生</span>」と刻まれている。");
+        return;
+      }
+      if (key === 'rightStatue') {
+        msg("石の彫像。左の像と対になっている。<br>台座に「<span style='color:yellow'>死</span>」と刻まれている。");
+        return;
+      }
+      if (key === 'stairs') {
+        msg("崩れかけた階段が上へと続いている。<br>上に扉が見える。");
+        return;
+      }
+      if (key === 'finalDoor') {
+        if (state.flags.finalOpen) {
+          state.gameOver = true;
+          msg("<span style='color:cyan'>扉の向こうに光が差し込む。</span><br><span style='color:cyan'>外の空気が肺を満たした。</span><br><br>…生きている。");
+        } else {
+          let answer = prompt("扉に刻まれた問い:\n「生と死の間にあるものは何か？」");
+          if (answer) {
+            const a = answer.trim();
+            // 複数の正解を受け付ける
+            if (["と", "間", "の", "生と死", "自分", "私", "僕", "俺", "命", "今", "現在", "恐怖", "hope", "love", "life"].some(w => a.includes(w))) {
+              state.flags.finalOpen = true;
+              msg("扉が光を放ち、ゆっくりと開いた…！<br><span style='color:cyan'>向こうに光が見える！</span>");
+              shakeScreen();
+            } else {
+              die("彫像の目が赤く燃え上がり、闇があなたを飲み込んだ…<br><span style='color:red'>☠ DEAD</span>");
+            }
+          }
+        }
+        return;
+      }
+    }
+  }
+];
+
+function shakeScreen() {
+  let count = 0;
+  const interval = setInterval(() => {
+    shakeX = (Math.random() - 0.5) * 8;
+    shakeY = (Math.random() - 0.5) * 8;
+    count++;
+    if (count > 10) { shakeX = 0; shakeY = 0; clearInterval(interval); }
+  }, 50);
+}
+
 canvas.addEventListener('click', (e) => {
+  if (state.dead) {
+    state.dead = false;
+    draw();
+    return;
+  }
   if (state.gameOver) return;
+  
   const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left; const y = e.clientY - rect.top;
-  if (x > objects.door.x && x < objects.door.x + objects.door.w && y > objects.door.y && y < objects.door.y + objects.door.h) {
-    if (state.hasKey) { ui.innerHTML = "鍵を使ってドアを開けた！外へ脱出成功だ！"; state.gameOver = true; }
-    else { ui.innerHTML = "鍵がかかっている。びくともしない。"; }
-  } else if (x > objects.desk.x && x < objects.desk.x + objects.desk.w && y > objects.desk.y && y < objects.desk.y + objects.desk.h) {
-    ui.innerHTML = "汚れた机だ。メモが置いてある。『死(4)は一(1)番惨(3)い』…？"; state.paperRead = true;
-  } else if (x > objects.safe.x && x < objects.safe.x + objects.safe.w && y > objects.safe.y && y < objects.safe.y + objects.safe.h) {
-    if (state.isSafeOpen) { ui.innerHTML = "金庫は空だ。"; }
-    else { let input = prompt("3桁の数字を入力してください:"); if (input === state.safeCode) { ui.innerHTML = "金庫が開いた！中から「古い鍵」を手に入れた。"; state.isSafeOpen = true; state.hasKey = true; } else { ui.innerHTML = "番号が違うようだ。"; } }
-  } else if (x > objects.painting.x && x < objects.painting.x + objects.painting.w && y > objects.painting.y && y < objects.painting.y + objects.painting.h) {
-    ui.innerHTML = "気味の悪い肖像画だ。目がこちらを追いかけてくる気がする…。";
-  } else { ui.innerHTML = "そこには何もない。"; }
+  const x = e.clientX - rect.left - shakeX;
+  const y = e.clientY - rect.top - shakeY;
+  
+  const room = rooms[state.room];
+  let hit = false;
+  for (const [key, obj] of Object.entries(room.objects)) {
+    if (x > obj.x && x < obj.x + obj.w && y > obj.y && y < obj.y + obj.h) {
+      room.onClick(key);
+      hit = true;
+      break;
+    }
+  }
+  if (!hit && !state.dead) msg("そこには何もない。暗闇が広がるだけだ。");
   draw();
 });
-draw();
+
+function draw() {
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+  
+  const room = rooms[state.room];
+  room.draw();
+  
+  // ゴースト演出
+  if (ghostShow) {
+    ctx.fillStyle = "rgba(150,0,0," + (0.2 + Math.random()*0.2) + ")";
+    ctx.beginPath(); ctx.ellipse(300, 200, 40, 80, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.beginPath(); ctx.arc(285, 175, 4, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(315, 175, 4, 0, Math.PI*2); ctx.fill();
+  }
+  
+  // 死亡画面
+  if (state.dead) {
+    ctx.fillStyle = "rgba(80,0,0,0.85)";
+    ctx.fillRect(0, 0, 600, 400);
+    ctx.fillStyle = "#ff3333";
+    ctx.font = "48px serif";
+    ctx.fillText("YOU DIED", 190, 190);
+    ctx.fillStyle = "#888";
+    ctx.font = "14px serif";
+    ctx.fillText("クリックで続行", 245, 240);
+  }
+  
+  // クリア画面
+  if (state.gameOver) {
+    ctx.fillStyle = "rgba(0,0,0,0.9)"; ctx.fillRect(0, 0, 600, 400);
+    // 光の演出
+    const grad = ctx.createRadialGradient(300, 200, 0, 300, 200, 200);
+    grad.addColorStop(0, "rgba(200,220,255,0.3)");
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, 600, 400);
+    
+    ctx.fillStyle = "#aaccff";
+    ctx.font = "36px serif";
+    ctx.fillText("ESCAPE SUCCESS", 155, 180);
+    ctx.fillStyle = "#668";
+    ctx.font = "16px serif";
+    ctx.fillText("死亡回数: " + state.deathCount, 245, 230);
+    ctx.fillStyle = "#445";
+    ctx.font = "12px serif";
+    ctx.fillText("あなたは地下室から脱出した。", 210, 270);
+    ctx.fillText("…だが、本当に「外」に出られたのだろうか？", 170, 295);
+  }
+
+  // ライトフリッカー
+  if (!state.gameOver && !state.dead && Math.random() < 0.003) {
+    ctx.fillStyle = "rgba(0,0,0,0.9)"; ctx.fillRect(0, 0, 600, 400);
+  }
+  
+  ctx.restore();
+}
+
+// アニメーションループ
+function loop() {
+  ambientTick++;
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
 </script>
 </body>
 </html>
